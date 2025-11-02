@@ -6,6 +6,9 @@ import threading
 import sys
 import time
 
+
+#@TODO: handle the broken sockets errors while pub is sending and if pub with no payload
+
 DEBUG:bool = "--debug" in sys.argv
 
 class Broker:
@@ -26,8 +29,9 @@ class Broker:
             self.broker_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) #open the socket
             self.broker_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # enable option: re-using the socket immediately without TIME_WAIT
             self.clients = dict()
-            self.subs = dict() #{"topic1":["c1, c2, c3"], "topic2":[c1, c5]}
-            self.lock = threading.Lock() # for shared resources
+            self.subs = dict() #{"topic1":{"c1, c2, c3"}, "topic2":{c1, c5}}
+            self.subs_lock = threading.Lock() # for shared resources
+            self.client_lock = threading.Lock() # for shared resources
         except Exception as e:
             print(f"Exception: {e}")
             
@@ -49,8 +53,8 @@ class Broker:
                     print("Error While Accepting ...")
                 break
             print(f"Connected to {client_addr}.")
-            with self.lock:
-                self.clients[client_addr] = client_socket # this list yet to be appended with the client's subs
+            with self.client_lock:
+                self.clients[client_addr] = client_socket
             threading.Thread(target=self.handle_client, daemon=True, args=(client_addr, client_socket)).start() #start the client thread
     
     def handle_client(self, addr, c_socket:socket.socket):
@@ -63,49 +67,49 @@ class Broker:
             print(f"[BROKER] Exception wile init send: {e}")
         
         while True:
-            # once the connection starts the client must send thier commands
             # sub/pub -t topic [if pub] -m payload
             try:
                 data = c_socket.recv(1024)
                 if not data:
-                    print(f"Disconnected {addr} as no data")
+                    print(f"Disconnected {addr}")
                     break
                 msg = data.decode().strip()
                 tags_values:dict = self.__extract_data(msg) # returns a dic of: a ==> action, t ==> topic, m ==> payload
                 action = tags_values.get("a")
                 topic = tags_values.get("t")
                 payload = tags_values.get("m", "")
-                if "sub" == action:
-                    if DEBUG:
-                        print(f"Sub received from {addr}")
-                    if topic not in self.subs.keys():
-                        self.subs[topic] = [c_socket, ]
-                    elif c_socket not in self.subs[topic]:
-                        self.subs[topic].append(c_socket)
-                elif "pub" == action and topic:
-                    if DEBUG:
-                        print(f"Pub received from {addr}")
-                    for c in list(self.subs.get(topic, [])):
-                        c.sendall(f"[SEND FROM {addr}]: {topic}: {payload}.".encode())
+                with self.subs_lock:
+                    if "sub" == action:
+                        if DEBUG:
+                            print(f"Sub received from {addr}")
+                        if topic not in self.subs.keys():
+                            self.subs[topic] = {c_socket, }
+                        elif c_socket not in self.subs[topic]:
+                            self.subs[topic].add(c_socket)
+                    elif "pub" == action and topic:
+                        if DEBUG:
+                            print(f"Pub received from {addr}")
+                        for c in set(self.subs.get(topic, {})):
+                            c.sendall(f"[SEND FROM {addr}]: {topic}: {payload}.".encode())
             except Exception as e:
                 print(f"Exception: {e}")
-        self.remove_client(addr)
+        self.remove_client(addr, c_socket)
         
-    def remove_client(self, addr):
+    def remove_client(self, addr, c_socket:socket.socket):
         """Remove a disconnected client."""
-        with self.lock:
-            if addr in self.clients.keys():
-                print(f"[DISCONNECTED] {addr}.")
-                self.clients[addr].close()
-                del self.clients[addr]
-                
+        c_socket.close()
+        with self.subs_lock:
+            for topic, sub_set in self.subs.items():
+                if c_socket in sub_set: self.subs[topic].remove(c_socket)
+        print(f"[DISCONNECTED] {addr}.")
                 
     def stop(self):
         self.is_running = False
-        with self.lock:
+        with self.client_lock:
             for c in self.clients.values():
                 c.close()
-        self.clients.clear()
+            self.clients.clear()
+        self.broker_socket.shutdown(socket.SHUT_RDWR) # More anaalysis is needed
         self.broker_socket.close()
         print("Broker Closed!")
                 

@@ -11,7 +11,7 @@ DEBUG:bool = "--debug" in sys.argv
 class Client:
     def __init__(self, options:str = ""):
         try:
-            self.host = "localhost"
+            self.host = "0.0.0.0"
             self.port = 12345
 
             if options:
@@ -61,6 +61,9 @@ class Client:
                 msg = input(">> ")
                 if DEBUG:
                     print("Input Recived....")
+                if "exit" in msg.lower():
+                    self.close()
+                    continue
                 with self.lock:
                     self.client_socket.sendall(msg.encode())
                 if DEBUG:
@@ -70,13 +73,13 @@ class Client:
                 self._reconnect()
                 
     def _reconnect(self):
-        # with self.lock:
-        #     try:
-        #         self.client_socket.close()
-        #     except Exception:
-        #         pass
-        #     self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        #     self.connected = False
+        with self.lock:
+            try:
+                self.client_socket.close()
+            except Exception:
+                pass
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.connected = False
         time.sleep(0.1)
                 
     def start(self):
